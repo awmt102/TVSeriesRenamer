@@ -65,7 +65,6 @@
 # }}}
 #use warnings;				# I'm not that leet {{{
 use strict;					# Let's be scientific about this
-use Term::ReadKey;			# Allows single keypresses to be detected (so no need to press <ENTER> all the time)
 use Cwd;					# Current Working Directory library
 use LWP::Simple;			# Adds get($url) function
 use URI::Escape;			# Convenient translation of " " <-> %20 etc in URIs
@@ -156,7 +155,7 @@ my $implicit_format = 1;  # 1="Soft" format, use internal algorithm to detect in
 my $do_win32_associate = 0;	# 0=Do nothing, 1=associate, -1=unassociate
 
 #------------------------------------------------------------------------------}}}
-my $version = "TV Series Renamer v2.56\nReleased 24 April 2012\n"; # {{{
+my $version = "TV Series Renamer v2.57\nReleased 27 April 2020\n"; # {{{
 print $version;
 my $helpMessage =
 "Usage: $0 [OPTIONS] [FILE|URL|-]
@@ -513,9 +512,7 @@ if($do_win32_associate == 1)
 		print "if you think you know better, you can try anyways.\n";
 		print "Take a stand? [y/${ANSIbold}N${ANSInormal}]: ";
 
-		ReadMode "cbreak";
-		$_ = ReadKey();
-		ReadMode "normal";
+		$_ = <STDIN>; chomp;
 
 		if($_ =~ /y| |\xa|\.|>/i){	  # 'Y', space, enter or the '>|.' key
 			print $ANSIgreen."y\n".$ANSInormal;
@@ -524,9 +521,7 @@ if($do_win32_associate == 1)
 			print "Script: $0\n";
 			print "Anything about that strike you as odd? [y/${ANSIbold}N${ANSInormal}]: ";
 
-			ReadMode "cbreak";
-			$_ = ReadKey();
-			ReadMode "normal";
+			$_ = <STDIN>; chomp;
 
 			if($_ =~ /y| |\xa|\.|>/i){	  # 'Y', space, enter or the '>|.' key
 				print $ANSIgreen."y\n".$ANSInormal;
@@ -744,9 +739,7 @@ else
 						$_ = 'N';
 					}
 					else{
-						ReadMode "cbreak";
-						$_ = ReadKey();
-						ReadMode "normal";
+						$_ = <STDIN>; chomp;
 					}
 
 					if($_ =~ /y| |\xa|\.|>/i){	  # 'Y', space, enter or the '>|.' key
@@ -808,6 +801,9 @@ else
 				#	Nifty eh? }}}
 				my $message = "\n".$ANSIup."Fetching document ".($debug?$inputFile:'')."... $ANSIsave$ANSIred\n";
 				print $message ;
+				# Debugging: Show URL being fetched
+				#print $inputFile;
+				#print "\n";
 				if($_ = get($inputFile)){
 					my $t;
 					print $ANSIrestore.$ANSInormal."[Done]\n";
@@ -840,14 +836,14 @@ else
 
 			## Strip attributes from tags, making format detection slightly more resistant to change
 			s/<([^ >]*)[^>]*\/?>/<\1>/g;
-			s/\015//g;	# Strip windows-style newlines
-
+			s/\015/\n/g;	# Strip windows-style newlines
+			
 			#print; # Print stripped page to aid parser development
 
 		} # Close if($inputFile) }}}
 		elsif($inputFile =~ /\.txt$/)	#{{{
 		{
-			open(FH, $inputFile) || die "Can't open intput file: $!";
+			open(FH, $inputFile) || die "Can't open input file: $!";
 			$_ = <FH>;
 			close(FH);
 		}	# }}}
@@ -1030,71 +1026,62 @@ else
 				my ($num, $epTitle, $lastPilotNum);
 				$lastPilotNum = -1;	# i.e. none
 
+				# Remove tr and td opening / closing tags, but leave <a>, as
+				# this delimites the episode title from metadata like "(30
+				# min)"
+				# From:
+				#    <tr><td>S06.</td><td>6-0&nbsp;</td><td>02 Oct 11</td><td><a>Big Changes</a> (30 min)</td></tr>
+				# 
+				#    <tr><td>S06.</td><td>6-0&nbsp;</td><td>11 Dec 11</td><td><a>Holiday Surprise</a> (30 min)</td></tr>
+				# to
+				#    S06.  6-0&nbsp;  02 Oct 11  <a>Big Changes</a> (30 min)
 
-				foreach(@input)
+				#    S06.  6-0&nbsp;  11 Dec 11  <a>Holiday Surprise</a> (30 min)
+				s|</?t[^>]*>| |g;
+
+				# Remove non-breaking space to arrive at:
+				#    S06.  6-0  02 Oct 11  <a>Big Changes</a> (30 min)
+				#
+                #    S06.  6-0  11 Dec 11  <a>Holiday Surprise</a> (30 min)
+				s|&nbsp;||g;
+
+				# Remove leading whitespace, to get to:
+				# S06.  6-0  02 Oct 11  <a>Big Changes</a> (30 min)
+				# S06.  6-0  11 Dec 11  <a>Holiday Surprise</a> (30 min)
+				s|^\s\s*||gm;  # m: multiline
+
+				
+				foreach(split($/))
 				{
-					# First remove any <span> tags and anything they contain
-					# (links to Trailers etc)
-					s!<span[^>]*>.*?</span>!!g;
+					# Debugging
+					#print;
+					#print "\n";
 
-					if( ($num, $epTitle) = ($_ =~ /^\d+\s+$season-(\d+)\s+.*<a[^>]*>(.*?)<\/a>/) )
+                    # Generic format
+					if( ($num, $epTitle) = ($_ =~ /^\d+\.\s+$season-\s?(\d+)\s+.*<a[^>]*>(.*?)<\/a>/) )
 					{
 						check_and_push($epTitle, \@name, $num);
 					}
-					# Episodes with airdates
-					elsif( ($num, $epTitle) = ($_ =~ /\s+$season-(..).*\d+ [A-Z][a-z]+ \d+ \s*(.*)$/) )
+					# Specials (i.e. Episode 0), so capture "Sx" from start of line
+					elsif( ($num, $epTitle) = ($_ =~ /^S(\d+)\.\s+\d+-\s?0\s+.*<a[^>]*>(.*?)<\/a>/) )
 					{
-						# Cleanup whitespace (and tags if using online version)
-						($epTitle) = ($epTitle =~ /^(?:<a[^>]*>)?(.*?)(?:<\/a>.*)?$/);
-						check_and_push($epTitle, \@name, $num);
+						check_and_push($epTitle, \@sname, $num);
 					}
-					# Chip'n'Dale Rescue Rangers, maybe others
-					elsif( ($num, $epTitle) = ($_ =~ /^<li>\s+$season-(..)(.*)$/) )
+					# Old "TVRage" listing (plain text, so <a>...</a> doesn't match):
+                    # Episode #     Prod #      Air Date   Titles
+                    # _____ ______ ___________  ___________ ___________________________________________
+                    # &bull; Season 1
+                    # 1      1-01      101       10/Mar/10   Garry & Star Lynn
+                    # 2      1-02      102       17/Mar/10   Chris & Pam
+                    # 3      1-03      103       24/Mar/10   Shane & Angela
+                    # 4      1-04      104       31/Mar/10   Chris & Hollis
+                    # 5      1-05      105       07/Apr/10   John & Deanna
+                    # 6      1-06      106       14/Apr/10   Chris & Breanne
+					elsif( ($num, $epTitle) = ($_ =~ /^\d+\s+$season\s?-\s?0?(\d+)\s+\d+\s+\S+\s+(.*)$/) )
 					{
-						# Cleanup whitespace (and tags if using online version)
-						($epTitle) = ($epTitle =~ /^.{24}(?:<a[^>]*>)?(.*?)(?:<\/a>.*)?$/);
-						$epTitle =~ s@<img></a> <a>@@;
-						check_and_push($epTitle, \@name, $num);
-					}
-					# Most episodes (new parser, v2.34)
-					elsif( ($num, $epTitle) = ($_ =~ /\s+$season-(..)(.*)$/) )
-					{
-						# Cleanup whitespace (and tags if using online version)
-						($epTitle) = ($epTitle =~ /^.{28}(?:<a[^>]*>)?(.*?)(?:<\/a>.*)?$/);
-						$epTitle =~ s@<img></a> <a>@@;
-						check_and_push($epTitle, \@name, $num);
-					}
-					# Most episodes (old parser, v2.33 and earlier)
-					elsif( ($num, $epTitle) = ($_ =~ /\s*\d+\.\s+$season-(..).*? \w{3} \d{2}(.*$)/) )
-					{
-						# Cleanup whitespace (and tags if using online version)
-						($epTitle) = ($epTitle =~ /^\s*(?:\<a\>)?(.*?)(?:\<\/a\>.*)?$/);
-						check_and_push($epTitle, \@name, $num);
-					}
-					# Pilot episodes (c.f. "Lost" & "24" season 1)
-					elsif( ($num, $epTitle) = ($_ =~ /\s+P-\s*(\d+).{26}(.*$)/) )
-					{
-						# Often a series has multiple P-0 entries, but people like to order then by release date.
-						# So we assume pilots are listed chronologically
-						if( $num == 0 && $lastPilotNum != -1 )
-						{
-							$lastPilotNum += 1;
-							$num = $lastPilotNum;
-						}
-						else
-						{
-							$lastPilotNum = $num;
-						}
 						# Cleanup whitespace (and tags if using online version)
 						($epTitle) = ($epTitle =~ /^\s*(?:\<a\>)?(.*?)(?:\<\/a\>)?$/);
-						check_and_push($epTitle, \@pname, $num);
-					}
-					# Special episodes
-					elsif( ($num, $epTitle) = ($_ =~ /\s+S-?\s*(\d+).{26}(.*$)/) )
-					{
-						# Cleanup whitespace (and tags if using online version)
-						($epTitle) = ($epTitle =~ /^\s*(?:\<a\>)?(.*?)(?:\<\/a\>)?\s*$/);
-						check_and_push($epTitle, \@sname, $num);
+						check_and_push($epTitle, \@name, $num);
 					}
 				}
 
@@ -1212,6 +1199,15 @@ else
 	# End EPISODE DATA PARSER }}}
 } # end else clause of if($cleanup)
 # End Look for input }}}
+
+if( scalar @name eq 1
+and scalar @sname eq 1
+and scalar @pname eq 1
+){
+	print $ANSIred, "ERROR: After all that, still no usable episode listings!\n";
+	exit(1 >> 8);
+
+}
 
 ##[ FILENAME PARSER ]###########################################################{{{
 
@@ -1382,27 +1378,27 @@ foreach(@fileList){
 			my $epTitle = $epTitle1;
 			if($epTitle2){
 				my $max = 0;
+				my $epTitle2suffix = "";
 
-				# Convert string to arrays of characters
-				my @first = split //, $epTitle1;
-				my @second = split //, $epTitle2;
+				# Convert string to arrays of words
+				my @first = split /\s+/, $epTitle1;
+				my @second = split /\s+/, $epTitle2;
 
-				if( length $epTitle2 > length $epTitle1 ){
-					$max = length $epTitle2;
+				if( scalar @first > scalar @second ){
+					$max = scalar @second;
 				}else{
-					$max = length $epTitle1;
+					$max = scalar @first;
 				}
 
-				my $common = 0;
 				for my $i (0..$max){
-					if( @first[$i] eq @second[$i] ){
-						$common = $i;
-					}else{
+					if( @first[$i] ne @second[$i] ){
+						$epTitle2suffix = join " ", splice @second, $i;
+						$epTitle2suffix =~ s|\s\s*$||;  # Strip trailing whitespace
 						last;
 					}
 				}
 
-				$epTitle = $epTitle1 . " and " . substr($epTitle2, $common+1);
+				$epTitle = $epTitle1 . " and " . $epTitle2suffix;
 			}
 
 			# Print all source data before compiling new name
@@ -1456,9 +1452,7 @@ foreach(@fileList){
 				$key = 'Y';
 			}
 			else{
-				ReadMode "cbreak";
-				$key = ReadKey();
-				ReadMode "normal";
+				$key = <STDIN>; chomp;
 			}
 
 			if($key =~ /y| |\xa|\.|>/i){	# 'Y', space, enter or the '>' key
@@ -1566,9 +1560,7 @@ USERPROMPT: {
 			$_ = 'Y';
 		}
 		else{
-			ReadMode "cbreak";
-			$_ = ReadKey();
-			ReadMode "normal";
+			$_ = <STDIN>; chomp;
 		}
 
 		if($_ eq '?'){print "?\n"; $detailedView = 1; goto USERPROMPT;}
@@ -1731,17 +1723,34 @@ USERPROMPT: {
 sub check_and_push #{{{
 {
 # Checks array destination is not defined before assigning value
+	use HTML::Entities;
+
 	my ($data, $array_ref, $index) = @_;
+
+	# Debugging to see which regex brought us here
+	#my ($package, $filename, $line) = caller;
+	#print $line, $data, "\n";
+
+	$data =~  s/^\s+//;				# Trim leading whitespace
+	$data =~  s/\s+$//;				# Trim trailing whitespace
+
+	# EpGuides seems to have double-encoded some of their title, e.g.
+	# http://epguides.com/Simpsons/
+	# 22.	2-9 	20 Dec 90	Itchy &amp;amp; Scratchy &amp;amp; Marge
+	decode_entities($data);
+	decode_entities($data);
+
+	# Decode HTML entities
+
 	if($array_ref->[$index]){
+		if($array_ref->[$index] == $data){return}
 		print $ANSIred."  Duplicate input: Ep ",$array_ref == \@sname ? 'S' : '' ,$index,
 			  " already defined! Discarding redefinition.\n".$ANSInormal;
-		  print $ANSIyellow."	 Current:	",$array_ref->[$index],"\n",
+		print $ANSIyellow."	 Current  : ",$array_ref->[$index],"\n",
 				"	 Discarded: $data\n".$ANSInormal;
 		$warnings++;
 	}
 	else{
-		$data =~  s/^\s+//;				# Trim leading whitespace
-		$data =~  s/\s+$//;				# Trim trailing whitespace
 		$array_ref->[$index] = $data;	# Feed ep number to array
 	}
 } # }}} End sub
@@ -1808,9 +1817,7 @@ sub readURLfile #{{{
 			$answer = 'N';
 		}
 		else{
-			ReadMode "cbreak";
-			$answer = ReadKey();
-			ReadMode "normal";
+			$answer = <STDIN>; chomp;
 		}
 
 		if($answer =~ /y|\.|>/i){	 # 'Y', space, enter or the '>'/'.' key
